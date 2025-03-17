@@ -1,4 +1,3 @@
-// openmanus/client/src/App.tsx
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom"
 import { ThemeProvider } from "./components/ui/theme-provider"
 import { Toaster } from "sonner"
@@ -8,6 +7,7 @@ import { Register } from "./pages/Register"
 import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
 import { Home } from "./pages/Home"
+import { Projects } from "./pages/Projects"
 
 function App() {
   return (
@@ -18,10 +18,11 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route element={<Layout />}>
-              <Route path="/" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+              <Route path="/" element={<ProtectedRoute><Projects /></ProtectedRoute>} />
+              <Route path="/chat/:projectId" element={<ProtectedRoute><Home /></ProtectedRoute>} />
             </Route>
           </Routes>
-          <Toaster 
+          <Toaster
             position="top-right"
             duration={3000}
             closeButton

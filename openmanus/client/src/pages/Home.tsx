@@ -1,8 +1,11 @@
-// openmanus/client/src/pages/Home.tsx  
+// openmanus/client/src/pages/Home.tsx
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useParams, useNavigate } from 'react-router-dom';
+import { ChevronLeft } from 'lucide-react';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Button } from '@/components/ui/button';
 import { ChatMessage } from '@/components/Chat/ChatMessage';
 import { ChatInput } from '@/components/Chat/ChatInput';
 import { CodeEditor } from '@/components/Tools/CodeEditor';
@@ -11,6 +14,7 @@ import { Browser } from '@/components/Tools/Browser';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ChatMessage as IChatMessage } from '@/types';
 import { getChatHistory, sendMessage, editMessage, deleteMessage } from '@/api/chat';
+import { getProjectChat } from '@/api/projects';
 import { RootState } from '@/store';
 import {
   updateCodeEditor,
@@ -30,6 +34,8 @@ interface TabState {
 }
 
 export function Home() {
+  const { projectId } = useParams();
+  const navigate = useNavigate();
   const dispatch = useDispatch();
   const { toast } = useToast();
   const { codeEditorContent, browserUrl, chatMessages } = useSelector((state: RootState) => state.tools);
@@ -41,22 +47,22 @@ export function Home() {
   ]);
 
   useEffect(() => {
-    const loadInitialData = async () => {
-      if (chatMessages.length === 0) {
-        try {
-          const { messages } = await getChatHistory();
-          dispatch(setChatMessages(messages));
-        } catch (error) {
-          toast({
-            variant: "destructive",
-            title: "Error",
-            description: "Failed to load chat history"
-          });
-        }
-      }
-    };
-    loadInitialData();
-  }, [dispatch, toast, chatMessages.length]);
+    loadProjectChat();
+  }, [projectId]);
+
+  const loadProjectChat = async () => {
+    if (!projectId) return;
+    try {
+      const { messages } = await getProjectChat(projectId);
+      dispatch(setChatMessages(messages));
+    } catch (error) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to load chat history"
+      });
+    }
+  };
 
   const handleSendMessage = async (content: string) => {
     const userMessage: IChatMessage = {
@@ -84,62 +90,36 @@ export function Home() {
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
-    // Start loading state to prevent further interactions
     setIsLoading(true);
-    
     try {
-      // Step 1: Find the message and its position before making any changes
-      const messageIndex = chatMessages.findIndex(msg => msg.id === messageId);
-      if (messageIndex === -1) {
-        throw new Error("Message not found");
-      }
-
-      // Step 2: Create updated message object
-      const updatedMessage = {
-        ...chatMessages[messageIndex],
-        content: newContent
-      };
-      
-      // Step 3: First send edit to backend, so we can catch errors early
       const editSuccess = await editMessage(messageId, newContent);
       if (!editSuccess) {
         throw new Error("API failed to update message");
       }
-      
-      // Step 4: Update Redux state - only keep messages up to the edited one
-      const updatedMessages = [
-        ...chatMessages.slice(0, messageIndex),
-        updatedMessage
-      ];
+
+      const updatedMessages = chatMessages.map(msg =>
+        msg.id === messageId
+          ? { ...msg, content: newContent }
+          : msg
+      );
       dispatch(setChatMessages(updatedMessages));
-      
-      // Step 5: Generate a new AI response based on edited content
+
       const response = await sendMessage(newContent);
-      if (!response) {
-        throw new Error("Failed to generate new response");
+      if (response) {
+        dispatch(addChatMessage(response as IChatMessage));
       }
-      
-      // Step 6: Add the new response to chat history
-      dispatch(addChatMessage(response as IChatMessage));
-      
-      // Success notification only if everything worked
+
       toast({
         title: "Success",
-        description: "Message updated and new response generated"
+        description: "Message updated successfully"
       });
-      
     } catch (error: any) {
-      // Detailed error notification
       toast({
         variant: "destructive",
         title: "Edit Failed",
         description: error.message || "Failed to edit message"
       });
-      
-      // Could add rollback logic here if needed to undo partial changes
-      
     } finally {
-      // Always reset loading state
       setIsLoading(false);
     }
   };
@@ -147,22 +127,12 @@ export function Home() {
   const handleDeleteMessage = async (messageId: string) => {
     setIsLoading(true);
     try {
-      // Step 1: Find the message first to confirm it exists
-      const messageIndex = chatMessages.findIndex(msg => msg.id === messageId);
-      if (messageIndex === -1) {
-        throw new Error("Message not found");
-      }
-      
-      // Step 2: Call API to delete the message
       const deleteSuccess = await deleteMessage(messageId);
       if (!deleteSuccess) {
         throw new Error("API failed to delete message");
       }
-      
-      // Step 3: Only after successful API call, update Redux state
-      // Remove the deleted message and all following messages
-      dispatch(setChatMessages(chatMessages.slice(0, messageIndex)));
 
+      dispatch(deleteChatMessage(messageId));
       toast({
         title: "Success",
         description: "Message deleted successfully"
@@ -188,6 +158,16 @@ export function Home() {
 
   return (
     <div className="h-[calc(100vh-8rem)]">
+      <div className="mb-4 flex items-center">
+        <Button
+          variant="ghost"
+          onClick={() => navigate('/')}
+          className="gap-2 text-muted-foreground hover:text-foreground"
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Back to Projects
+        </Button>
+      </div>
       <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border">
         <ResizablePanel defaultSize={40} minSize={30}>
           <div className="h-full flex flex-col">
