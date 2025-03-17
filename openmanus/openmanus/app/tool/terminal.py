@@ -4,6 +4,7 @@ import shlex
 from typing import Optional
 
 from app.tool.base import BaseTool, CLIResult
+from app.config import ensure_workspace_exists
 
 
 class Terminal(BaseTool):
@@ -12,7 +13,7 @@ class Terminal(BaseTool):
 Use this when you need to perform system operations or run specific commands to accomplish any step in the user's task.
 You must tailor your command to the user's system and provide a clear explanation of what the command does.
 Prefer to execute complex CLI commands over creating executable scripts, as they are more flexible and easier to run.
-Commands will be executed in the current working directory.
+Commands will be executed in the workspace directory by default.
 Note: You MUST append a `sleep 0.05` to the end of the command for commands that will complete in under 50ms, as this will circumvent a known issue with the terminal tool where it will sometimes not return the output when the command completes too quickly.
 """
     parameters: dict = {
@@ -26,8 +27,12 @@ Note: You MUST append a `sleep 0.05` to the end of the command for commands that
         "required": ["command"],
     }
     process: Optional[asyncio.subprocess.Process] = None
-    current_path: str = os.getcwd()
     lock: asyncio.Lock = asyncio.Lock()
+
+    def __init__(self):
+        super().__init__()
+        # Start in the workspace directory instead of wherever we ran the script from
+        self.current_path = str(ensure_workspace_exists())
 
     async def execute(self, command: str) -> CLIResult:
         """
