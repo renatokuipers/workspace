@@ -157,8 +157,8 @@ export function Home() {
   };
 
   return (
-    <div className="h-[calc(100vh-8rem)]">
-      <div className="mb-4 flex items-center">
+    <div className="flex flex-col h-[calc(100vh-5rem)] pb-4">
+      <div className="mb-4 flex items-center px-4">
         <Button
           variant="ghost"
           onClick={() => navigate('/')}
@@ -168,44 +168,48 @@ export function Home() {
           Back to Projects
         </Button>
       </div>
-      <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border">
-        <ResizablePanel defaultSize={40} minSize={30}>
-          <div className="h-full flex flex-col">
-            <ScrollArea className="flex-1">
-              {chatMessages.map((message) => (
-                <ChatMessage
-                  key={message.id}
-                  message={message}
-                  onEdit={handleEditMessage}
-                  onDelete={handleDeleteMessage}
-                />
-              ))}
-            </ScrollArea>
-            <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
-          </div>
-        </ResizablePanel>
-        <ResizableHandle />
-        <ResizablePanel defaultSize={60}>
-          <Tabs defaultValue="code" className="h-full">
-            <TabsList className="w-full justify-start">
-              {tabs.map((tab) => (
-                <TabsTrigger key={tab.id} value={tab.id}>
-                  {tab.title}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-            <TabsContent value="code" className="h-[calc(100%-40px)]">
-              <CodeEditor value={codeEditorContent} onChange={handleCodeChange} />
-            </TabsContent>
-            <TabsContent value="terminal" className="h-[calc(100%-40px)]">
-              <Terminal />
-            </TabsContent>
-            <TabsContent value="browser" className="h-[calc(100%-40px)]">
-              <Browser url={browserUrl} onNavigate={handleBrowserNavigate} />
-            </TabsContent>
-          </Tabs>
-        </ResizablePanel>
-      </ResizablePanelGroup>
+      <div className="flex-1 min-h-0">
+        <ResizablePanelGroup direction="horizontal" className="h-full rounded-lg border mx-4">
+          <ResizablePanel defaultSize={40} minSize={30}>
+            <div className="h-full flex flex-col">
+              <ScrollArea className="flex-1 px-4">
+                {chatMessages.map((message) => (
+                  <ChatMessage
+                    key={message.id}
+                    message={message}
+                    onEdit={handleEditMessage}
+                    onDelete={handleDeleteMessage}
+                  />
+                ))}
+              </ScrollArea>
+              <ChatInput onSendMessage={handleSendMessage} isLoading={isLoading} />
+            </div>
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel defaultSize={60}>
+            <Tabs defaultValue="code" className="h-full flex flex-col">
+              <TabsList className="w-full justify-start px-4 py-2">
+                {tabs.map((tab) => (
+                  <TabsTrigger key={tab.id} value={tab.id} className="flex-1">
+                    {tab.title}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+              <div className="flex-1 min-h-0 p-4">
+                <TabsContent value="code" className="h-full m-0">
+                  <CodeEditor value={codeEditorContent} onChange={handleCodeChange} />
+                </TabsContent>
+                <TabsContent value="terminal" className="h-full m-0">
+                  <Terminal />
+                </TabsContent>
+                <TabsContent value="browser" className="h-full m-0">
+                  <Browser url={browserUrl} onNavigate={handleBrowserNavigate} />
+                </TabsContent>
+              </div>
+            </Tabs>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </div>
     </div>
   );
 }
