@@ -1,4 +1,3 @@
-// openmanus/client/src/api/files.ts
 import api from './api';
 import { FileNode } from '@/types';
 
@@ -82,5 +81,26 @@ export const saveFileContent = async (fileId: string, content: string) => {
     setTimeout(() => {
       resolve({ success: true });
     }, 300);
+  });
+};
+
+// Description: Upload file
+// Endpoint: POST /api/files/upload
+// Request: FormData with file
+// Response: { success: boolean, file: FileNode }
+export const uploadFile = async (file: File) => {
+  // Mock response
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      resolve({
+        success: true,
+        file: {
+          id: Math.random().toString(36).substring(7),
+          name: file.name,
+          type: 'file',
+          content: 'Uploaded file content'
+        }
+      });
+    }, 500);
   });
 };
