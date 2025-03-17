@@ -1,5 +1,6 @@
 import threading
 import tomllib
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -192,5 +193,12 @@ class Config:
     def search_config(self) -> Optional[SearchSettings]:
         return self._config.search_config
 
+def ensure_workspace_exists():
+    """Make sure our workspace directory is ready to rock."""
+    if not os.path.exists(WORKSPACE_ROOT):
+        os.makedirs(WORKSPACE_ROOT, exist_ok=True)
+        print(f"Created workspace directory at {WORKSPACE_ROOT}")
+    
+    return WORKSPACE_ROOT
 
 config = Config()
