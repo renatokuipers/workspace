@@ -1,11 +1,11 @@
 // openmanus/client/src/Tools/Browser.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, ArrowLeft, ArrowRight, Send, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { navigateToUrl, createBrowser } from '@/api/browser';
+import { navigateToUrl, createBrowser, closeBrowser, goBack, goForward, refreshPage } from '@/api/browser';
 
 interface BrowserProps {
   url: string;
@@ -13,141 +13,255 @@ interface BrowserProps {
 }
 
 export const Browser: React.FC<BrowserProps> = ({ url, onNavigate }) => {
-  const [currentUrl, setCurrentUrl] = useState(url);
-  const [history, setHistory] = useState<string[]>([url]);
-  const [historyIndex, setHistoryIndex] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
   const [browserId, setBrowserId] = useState<string | null>(null);
+  const [currentUrl, setCurrentUrl] = useState<string>(url || '');
+  const [currentTitle, setCurrentTitle] = useState<string>('');
+  const [canGoBack, setCanGoBack] = useState<boolean>(false);
+  const [canGoForward, setCanGoForward] = useState<boolean>(false);
+  const [screenshot, setScreenshot] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  
+  // URL input ref for focus management
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
+  // Initialize browser
   useEffect(() => {
     const initializeBrowser = async () => {
       try {
+        setIsLoading(true);
         const result = await createBrowser();
-        if (result.success) {
-          setBrowserId(result.browserId);
-          // Navigate to initial URL after browser is created
-          handleNavigation(url, false);
+        if (!result.success) {
+          toast({
+            variant: "destructive",
+            title: "Error",
+            description: "Failed to create browser instance"
+          });
+          return;
+        }
+        setBrowserId(result.browserId);
+        
+        // If initial URL is provided, navigate to it
+        if (url) {
+          await handleNavigation(url);
         }
       } catch (error) {
-        toast.error('Failed to initialize browser');
+        console.error('Error initializing browser:', error);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to initialize browser"
+        });
+      } finally {
+        setIsLoading(false);
       }
     };
+
     initializeBrowser();
-  }, [url]);
 
+    // Cleanup when component unmounts
+    return () => {
+      if (browserId) {
+        closeBrowser(browserId).catch(error => {
+          console.error('Error closing browser:', error);
+        });
+      }
+    };
+  }, []);
+
+  // Format URL before navigation
   const formatUrl = (inputUrl: string): string => {
-    try {
-      let formattedUrl = inputUrl.trim();
+    let formattedUrl = inputUrl.trim();
+    
+    // If URL doesn't start with a protocol, add https://
+    if (!formattedUrl.startsWith('http://') && 
+        !formattedUrl.startsWith('https://') && 
+        !formattedUrl.startsWith('file://')) {
       
-      // Check if it's a search query
-      if (!formattedUrl.includes('.') || formattedUrl.includes(' ')) {
-        return `https://www.google.com/search?q=${encodeURIComponent(formattedUrl)}`;
-      }
-
-      // Add https:// if no protocol is specified
-      if (!/^https?:\/\//i.test(formattedUrl)) {
+      // Check if it's likely a domain name
+      if (formattedUrl.includes('.') && !formattedUrl.includes(' ')) {
         formattedUrl = `https://${formattedUrl}`;
+      } else {
+        // Treat as a search query
+        formattedUrl = `https://www.google.com/search?q=${encodeURIComponent(formattedUrl)}`;
       }
-
-      // Validate URL
-      new URL(formattedUrl);
-      return formattedUrl;
-    } catch (error) {
-      throw new Error('Invalid URL');
     }
+    
+    return formattedUrl;
   };
 
-  // Fixed: Added browserId parameter and separated direct navigation from history navigation
+  // Handle direct URL navigation
   const handleDirectNavigation = async (formattedUrl: string) => {
     if (!browserId) {
-      toast.error('Browser not initialized');
-      return false;
+      console.error('Browser not initialized');
+      return;
     }
 
-    setIsLoading(true);
     try {
-      // Fix: Pass browserId to navigateToUrl
-      const result = await navigateToUrl(formattedUrl);
-
-      if (result.success) {
-        return true;
-      } else {
-        toast.error('Failed to load the page');
-        return false;
+      setIsLoading(true);
+      setCurrentUrl(formattedUrl);
+      
+      const result = await navigateToUrl(browserId, formattedUrl);
+      
+      if (!result.success) {
+        toast({
+          variant: "destructive",
+          title: "Navigation Error",
+          description: result.error || "Failed to navigate to URL"
+        });
+        return;
       }
-    } catch (error: any) {
-      toast.error(error.message || 'Failed to navigate to the URL');
-      return false;
+      
+      // Update state with navigation results
+      setCurrentUrl(result.url);
+      setCurrentTitle(result.title || '');
+      setScreenshot(`data:image/png;base64,${result.screenshot}`);
+      setCanGoBack(result.canGoBack);
+      setCanGoForward(result.canGoForward);
+      
+      // Notify parent component
+      if (onNavigate) {
+        onNavigate(result.url);
+      }
+    } catch (error) {
+      console.error('Error navigating to URL:', error);
+      toast({
+        variant: "destructive",
+        title: "Navigation Error",
+        description: "Failed to navigate to URL"
+      });
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Handle navigation, with proper URL formatting
   const handleNavigation = async (inputUrl: string, updateHistory = true) => {
+    const formattedUrl = formatUrl(inputUrl);
+    await handleDirectNavigation(formattedUrl);
+  };
+
+  // Navigate back in history
+  const handleBack = async () => {
+    if (!browserId || !canGoBack) return;
+    
     try {
-      const formattedUrl = formatUrl(inputUrl);
-      const success = await handleDirectNavigation(formattedUrl);
+      setIsLoading(true);
       
-      if (success) {
-        // Update parent component
-        onNavigate(formattedUrl);
-        setCurrentUrl(formattedUrl);
-        
-        // Only update history if this is a new navigation (not back/forward)
-        if (updateHistory) {
-          if (historyIndex < history.length - 1) {
-            // Trim future history if navigating from a past point
-            setHistory(prev => [...prev.slice(0, historyIndex + 1), formattedUrl]);
-            setHistoryIndex(historyIndex + 1);
-          } else {
-            // Add to history if at most recent point
-            setHistory(prev => [...prev, formattedUrl]);
-            setHistoryIndex(prev => prev + 1);
-          }
-        }
+      const result = await goBack(browserId);
+      
+      if (!result.success) {
+        toast({
+          variant: "destructive",
+          title: "Navigation Error",
+          description: result.error || "Failed to go back"
+        });
+        return;
       }
-    } catch (error: any) {
-      toast.error(error.message || 'Invalid URL');
+      
+      // Update state with navigation results
+      setCurrentUrl(result.url);
+      setCurrentTitle(result.title || '');
+      setScreenshot(`data:image/png;base64,${result.screenshot}`);
+      setCanGoBack(result.canGoBack);
+      setCanGoForward(result.canGoForward);
+      
+      // Notify parent component
+      if (onNavigate) {
+        onNavigate(result.url);
+      }
+    } catch (error) {
+      console.error('Error going back:', error);
+      toast({
+        variant: "destructive",
+        title: "Navigation Error",
+        description: "Failed to go back"
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
+  // Navigate forward in history
+  const handleForward = async () => {
+    if (!browserId || !canGoForward) return;
+    
+    try {
+      setIsLoading(true);
+      
+      const result = await goForward(browserId);
+      
+      if (!result.success) {
+        toast({
+          variant: "destructive",
+          title: "Navigation Error",
+          description: result.error || "Failed to go forward"
+        });
+        return;
+      }
+      
+      // Update state with navigation results
+      setCurrentUrl(result.url);
+      setCurrentTitle(result.title || '');
+      setScreenshot(`data:image/png;base64,${result.screenshot}`);
+      setCanGoBack(result.canGoBack);
+      setCanGoForward(result.canGoForward);
+      
+      // Notify parent component
+      if (onNavigate) {
+        onNavigate(result.url);
+      }
+    } catch (error) {
+      console.error('Error going forward:', error);
+      toast({
+        variant: "destructive",
+        title: "Navigation Error",
+        description: "Failed to go forward"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Refresh the current page
+  const handleRefresh = async () => {
+    if (!browserId) return;
+    
+    try {
+      setIsLoading(true);
+      
+      const result = await refreshPage(browserId);
+      
+      if (!result.success) {
+        toast({
+          variant: "destructive",
+          title: "Refresh Error",
+          description: result.error || "Failed to refresh page"
+        });
+        return;
+      }
+      
+      // Update state with refresh results
+      setCurrentUrl(result.url);
+      setCurrentTitle(result.title || '');
+      setScreenshot(`data:image/png;base64,${result.screenshot}`);
+      setCanGoBack(result.canGoBack);
+      setCanGoForward(result.canGoForward);
+    } catch (error) {
+      console.error('Error refreshing page:', error);
+      toast({
+        variant: "destructive",
+        title: "Refresh Error",
+        description: "Failed to refresh page"
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle form submit for URL navigation
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     handleNavigation(currentUrl);
-  };
-
-  const handleBack = async () => {
-    if (historyIndex > 0) {
-      const newIndex = historyIndex - 1;
-      const prevUrl = history[newIndex];
-      
-      // Navigate without updating history
-      const success = await handleDirectNavigation(prevUrl);
-      if (success) {
-        setHistoryIndex(newIndex);
-        setCurrentUrl(prevUrl);
-        onNavigate(prevUrl);
-      }
-    }
-  };
-
-  const handleForward = async () => {
-    if (historyIndex < history.length - 1) {
-      const newIndex = historyIndex + 1;
-      const nextUrl = history[newIndex];
-      
-      // Navigate without updating history
-      const success = await handleDirectNavigation(nextUrl);
-      if (success) {
-        setHistoryIndex(newIndex);
-        setCurrentUrl(nextUrl);
-        onNavigate(nextUrl);
-      }
-    }
-  };
-
-  const handleRefresh = () => {
-    handleDirectNavigation(currentUrl);
   };
 
   return (
@@ -157,7 +271,7 @@ export const Browser: React.FC<BrowserProps> = ({ url, onNavigate }) => {
           variant="ghost"
           size="icon"
           onClick={handleBack}
-          disabled={historyIndex === 0 || isLoading}
+          disabled={!canGoBack || isLoading}
           className="hover:bg-accent/50"
         >
           <ArrowLeft className="h-4 w-4" />
@@ -166,7 +280,7 @@ export const Browser: React.FC<BrowserProps> = ({ url, onNavigate }) => {
           variant="ghost"
           size="icon"
           onClick={handleForward}
-          disabled={historyIndex === history.length - 1 || isLoading}
+          disabled={!canGoForward || isLoading}
           className="hover:bg-accent/50"
         >
           <ArrowRight className="h-4 w-4" />
@@ -191,6 +305,7 @@ export const Browser: React.FC<BrowserProps> = ({ url, onNavigate }) => {
             className="w-full font-mono text-sm"
             placeholder="Enter URL or search query..."
             disabled={isLoading}
+            ref={urlInputRef}
           />
           <Button
             type="submit"

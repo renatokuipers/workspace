@@ -1,67 +1,185 @@
 const express = require('express');
 const router = express.Router();
 const terminalService = require('../services/terminalService');
-const { WebSocket, WebSocketServer } = require('ws');
+const { WebSocketServer } = require('ws');
 
+// Setup WebSocket for terminal communication
 const setupTerminalWebSocket = (server) => {
-  const wss = new WebSocketServer({ 
+  const wss = new WebSocketServer({
     server,
-    path: '/ws/terminal' // Changed from /api/terminal to /ws/terminal
+    path: '/ws/terminal',
+    clientTracking: true
   });
 
-  wss.on('connection', (ws) => {
+  console.log('Terminal WebSocket server initialized on path: /ws/terminal');
+
+  wss.on('connection', (ws, req) => {
     try {
-      const terminalId = Math.random().toString(36).substring(2);
-      const terminal = terminalService.createTerminal(terminalId);
+      // Extract terminal ID from URL query parameters
+      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const terminalId = url.searchParams.get('id') || Math.random().toString(36).substring(2);
+      const cols = parseInt(url.searchParams.get('cols')) || 80;
+      const rows = parseInt(url.searchParams.get('rows')) || 24;
+
+      console.log(`New terminal WebSocket connection: ID=${terminalId}, cols=${cols}, rows=${rows}`);
+
+      // Create or get existing terminal
+      const terminal = terminalService.createTerminal(terminalId, cols, rows);
       terminalService.setWebSocket(terminalId, ws);
 
-      // Send initial prompt
-      ws.send(JSON.stringify({
-        type: 'output',
-        data: '\r\n\x1B[1;32mWelcome to the OpenManus Terminal.\x1B[0m\r\n$ '
-      }));
+      // Setup ping/pong for connection health monitoring
+      ws.isAlive = true;
+      ws.on('pong', () => {
+        ws.isAlive = true;
+      });
 
+      // Handle incoming messages from client
       ws.on('message', (message) => {
         try {
-          const { type, data } = JSON.parse(message);
+          const data = JSON.parse(message);
+          console.log(`Received terminal message type: ${data.type} for terminal: ${terminalId}`);
 
-          switch (type) {
+          switch (data.type) {
             case 'input':
-              terminalService.handleCommand(terminalId, data);
+              // Send user input to terminal
+              terminalService.handleCommand(terminalId, data.data);
               break;
             case 'resize':
-              if (data.cols && data.rows) {
+              // Resize terminal
+              if (terminal && data.cols && data.rows) {
                 terminal.resize(data.cols, data.rows);
               }
               break;
             default:
-              console.warn(`Unknown message type: ${type}`);
+              console.warn(`Unknown terminal message type: ${data.type}`);
           }
         } catch (error) {
-          console.error('Error handling terminal message:', error);
+          console.error('Error processing terminal message:', error);
           ws.send(JSON.stringify({
             type: 'error',
-            data: 'Failed to process terminal command'
+            data: `Error: ${error.message}`
           }));
         }
       });
 
+      // Handle WebSocket close
       ws.on('close', () => {
-        terminalService.removeTerminal(terminalId);
+        console.log(`Terminal WebSocket closed: ${terminalId}`);
+        // Keep the terminal running for potential reconnection
+        // terminalService.removeTerminal(terminalId);
       });
 
+      // Handle WebSocket errors
       ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
-        terminalService.removeTerminal(terminalId);
+        console.error(`Terminal WebSocket error for ${terminalId}:`, error);
       });
     } catch (error) {
-      console.error('Error setting up terminal:', error);
-      ws.send(JSON.stringify({
-        type: 'error',
-        data: 'Failed to initialize terminal'
-      }));
+      console.error('Error setting up terminal WebSocket:', error);
+      try {
+        ws.send(JSON.stringify({
+          type: 'error',
+          data: `Failed to initialize terminal: ${error.message}`
+        }));
+      } catch (sendError) {
+        console.error('Could not send error to client:', sendError);
+      }
     }
+  });
+
+  // Set up a health check interval for WebSocket connections
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) {
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  wss.on('close', () => {
+    clearInterval(interval);
+    console.log('Terminal WebSocket server closed');
   });
 };
 
-module.exports = { router, setupTerminalWebSocket };
+// Get all terminals
+router.get('/', (req, res) => {
+  try {
+    const terminals = terminalService.getAllTerminals();
+    res.json(terminals);
+  } catch (error) {
+    console.error('Error getting terminals:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Create a new terminal
+router.post('/', (req, res) => {
+  try {
+    const options = req.body || {};
+    const terminal = terminalService.createTerminal(options);
+    res.status(201).json(terminal);
+  } catch (error) {
+    console.error('Error creating terminal:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get terminal info
+router.get('/:id', (req, res) => {
+  try {
+    const terminal = terminalService.getTerminalInfo(req.params.id);
+    res.json(terminal);
+  } catch (error) {
+    console.error(`Error getting terminal ${req.params.id}:`, error);
+    res.status(404).json({ error: error.message });
+  }
+});
+
+// Resize terminal
+router.post('/:id/resize', (req, res) => {
+  try {
+    const { cols, rows } = req.body;
+    
+    if (!cols || !rows) {
+      return res.status(400).json({ error: 'Columns and rows are required' });
+    }
+    
+    terminalService.resizeTerminal(req.params.id, cols, rows);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Error resizing terminal ${req.params.id}:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send input to terminal
+router.post('/:id/input', (req, res) => {
+  try {
+    const { data } = req.body;
+    
+    if (!data) {
+      return res.status(400).json({ error: 'Input data is required' });
+    }
+    
+    terminalService.writeToTerminal(req.params.id, data);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Error sending input to terminal ${req.params.id}:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Kill a terminal
+router.delete('/:id', (req, res) => {
+  try {
+    terminalService.killTerminal(req.params.id);
+    res.status(204).end();
+  } catch (error) {
+    console.error(`Error killing terminal ${req.params.id}:`, error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+module.exports = router;

@@ -2,35 +2,58 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
-const { EventEmitter } = require('events');
-const Process = require('../models/process'); // Assuming we have a Process model
 
 // Import message protocol utilities
 const { MESSAGE_TYPES, parseMessage, createMessage } = require('../utils/messageProtocol');
+const { resolvePythonPath, resolveScriptPath } = require('../utils/pathResolver');
 
-class ProcessManagerService extends EventEmitter {
+class ProcessManagerService {
   constructor() {
-    super();
-    
     // Process state
-    this.pythonProcess = null;
+    this.process = null;
+    this.processInfo = null;
+    this.outputBuffer = '';
+    this.errorBuffer = '';
+    this.messageHandlers = new Map();
     this.isRunning = false;
-    this.currentProcessInfo = null;
-    
-    // Configuration
-    this.pythonPath = process.env.PYTHON_PATH || 'python';
-    this.scriptPath = process.env.FLOW_SCRIPT_PATH || path.join(__dirname, '../../openmanus/run_flow.py');
-    
-    // Watchdog settings
-    this.lastResponseTime = Date.now();
-    this.watchdogInterval = null;
-    this.watchdogTimeout = parseInt(process.env.WATCHDOG_TIMEOUT) || 60000; // 60 seconds timeout
-    
-    // Virtual environment configuration
-    this.useVirtualEnv = process.env.USE_PYTHON_VENV === 'true';
-    this.virtualEnvPath = process.env.PYTHON_VENV_PATH || path.join(__dirname, '../../../venv');
+    this.logger = this.createLogger();
   }
-  
+
+  createLogger() {
+    const logDir = path.join(process.cwd(), 'logs');
+    
+    // Ensure logs directory exists
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+    
+    const logPath = path.join(logDir, 'process_manager.log');
+    const errLogPath = path.join(logDir, 'process_manager_error.log');
+    
+    // Create write streams
+    const stdoutStream = fs.createWriteStream(logPath, { flags: 'a' });
+    const stderrStream = fs.createWriteStream(errLogPath, { flags: 'a' });
+    
+    return {
+      log: (message) => {
+        const timestamp = new Date().toISOString();
+        const formattedMsg = `[${timestamp}] ${message}\n`;
+        stdoutStream.write(formattedMsg);
+        console.log(`[ProcessManager] ${message}`);
+      },
+      error: (message) => {
+        const timestamp = new Date().toISOString();
+        const formattedMsg = `[${timestamp}] ERROR: ${message}\n`;
+        stderrStream.write(formattedMsg);
+        console.error(`[ProcessManager] ERROR: ${message}`);
+      },
+      close: () => {
+        stdoutStream.end();
+        stderrStream.end();
+      }
+    };
+  }
+
   startWatchdog() {
     // Clear any existing watchdog
     if (this.watchdogInterval) {
@@ -105,340 +128,164 @@ class ProcessManagerService extends EventEmitter {
 
   async start() {
     if (this.isRunning) {
-      console.log('Process is already running');
-      return { success: true, processInfo: this.currentProcessInfo };
+      this.logger.log('Process is already running');
+      return { success: true, message: 'Process is already running' };
     }
 
-    console.log('Starting Python process...');
-
-    // Create a new process record in the database
-    const processInfo = new Process({
-      status: 'starting',
-      startTime: new Date(),
-      command: `${this.pythonPath} ${this.scriptPath}`,
-      logs: [{ level: 'info', message: 'Starting process' }]
-    });
-
     try {
-      await processInfo.save();
-      this.currentProcessInfo = processInfo;
+      // Get Python and script paths
+      const pythonPath = await resolvePythonPath();
+      const scriptPath = await resolveScriptPath();
 
-      // Determine Python executable path
-      let pythonExecutable = this.pythonPath;
-      let extraEnv = {};
+      this.logger.log(`Starting Python process with: ${pythonPath} ${scriptPath}`);
 
-      if (this.useVirtualEnv) {
-        // Check if virtual environment exists
-        const venvPythonPath = process.platform === 'win32'
-          ? path.join(this.virtualEnvPath, 'Scripts', 'python.exe')
-          : path.join(this.virtualEnvPath, 'bin', 'python');
+      // Prepare environment
+      const env = {
+        ...process.env,
+        PYTHONUNBUFFERED: '1'  // Ensures Python output is unbuffered
+      };
 
-        if (fs.existsSync(venvPythonPath)) {
-          pythonExecutable = venvPythonPath;
-          console.log(`Using Python from virtual environment: ${pythonExecutable}`);
+      // Spawn process
+      this.process = spawn(pythonPath, [scriptPath], {
+        cwd: path.dirname(scriptPath),
+        env: env
+      });
 
-          // Add virtual environment to PATH
-          const venvBinPath = path.dirname(venvPythonPath);
-          extraEnv.PATH = `${venvBinPath}${path.delimiter}${process.env.PATH}`;
-        } else {
-          console.warn(`Virtual environment not found at ${this.virtualEnvPath}, using system Python`);
-        }
+      if (!this.process || !this.process.pid) {
+        throw new Error('Failed to spawn Python process');
       }
 
-      // Check if script exists
-      if (!fs.existsSync(this.scriptPath)) {
-        const error = new Error(`Python script not found at ${this.scriptPath}`);
-        console.error('Error starting Python process:', error);
-        
-        await Process.findByIdAndUpdate(processInfo._id, {
-          status: 'error',
-          $push: { logs: { level: 'error', message: error.message } }
-        });
-        
-        return { success: false, error: error.message };
-      }
-
-      // Launch the Python process
-      const args = [this.scriptPath];
+      this.logger.log(`Process started with PID: ${this.process.pid}`);
       
-      this.pythonProcess = spawn(pythonExecutable, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          ...extraEnv,
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8'
-        }
-      });
-
-      // Setup stdout reader
-      const stdoutLineReader = readline.createInterface({
-        input: this.pythonProcess.stdout,
-        terminal: false
-      });
-
-      // Handle stdout lines
-      stdoutLineReader.on('line', (line) => {
-        try {
-          // Try to parse as JSON
-          const parsedMessage = parseMessage(line);
-          
-          if (parsedMessage && parsedMessage.type) {
-            // Reset watchdog timer on valid message
-            this.updateWatchdog();
-            
-            // Emit the message to listeners
-            this.emit('message', parsedMessage);
-            
-            // Log important messages
-            if (parsedMessage.type === MESSAGE_TYPES.LOG) {
-              const logLevel = parsedMessage.payload?.level || 'info';
-              const logMessage = parsedMessage.payload?.message || 'No message content';
-              
-              Process.findByIdAndUpdate(processInfo._id, {
-                $push: { logs: { level: logLevel, message: logMessage } }
-              }).catch(err => console.error('Error logging message:', err));
-            }
-          } else {
-            // Output that wasn't valid JSON
-            console.log(`Python stdout: ${line}`);
-          }
-        } catch (error) {
-          console.error('Error processing Python output:', error);
-          console.log('Raw output:', line);
-        }
-      });
-
-      // Handle stderr
-      const stderrLineReader = readline.createInterface({
-        input: this.pythonProcess.stderr,
-        terminal: false
-      });
-
-      stderrLineReader.on('line', (line) => {
-        console.error(`Python stderr: ${line}`);
-        
-        // Log error to the database
-        Process.findByIdAndUpdate(processInfo._id, {
-          $push: { logs: { level: 'error', message: line } }
-        }).catch(err => console.error('Error logging stderr:', err));
-      });
-
-      // Handle process exit
-      this.pythonProcess.on('exit', async (code, signal) => {
-        console.log(`Python process exited with code ${code} and signal ${signal}`);
-        
-        this.isRunning = false;
-        this.stopWatchdog();
-        
-        const exitStatus = code === 0 ? 'completed' : 'error';
-        const exitMessage = `Process exited with code ${code}${signal ? ` and signal ${signal}` : ''}`;
-        
-        try {
-          await Process.findByIdAndUpdate(processInfo._id, {
-            status: exitStatus,
-            endTime: new Date(),
-            exitCode: code,
-            $push: { logs: { level: exitStatus === 'error' ? 'error' : 'info', message: exitMessage } }
-          });
-        } catch (error) {
-          console.error('Error updating process status on exit:', error);
-        }
-        
-        // Emit exit event
-        this.emit('exit', { code, signal, processInfo });
-      });
-
-      // Handle process error
-      this.pythonProcess.on('error', async (error) => {
-        console.error('Python process error:', error);
-        
-        this.isRunning = false;
-        this.stopWatchdog();
-        
-        try {
-          await Process.findByIdAndUpdate(processInfo._id, {
-            status: 'error',
-            endTime: new Date(),
-            $push: { logs: { level: 'error', message: `Process error: ${error.message}` } }
-          });
-        } catch (dbError) {
-          console.error('Error updating process status on error:', dbError);
-        }
-        
-        // Emit error event
-        this.emit('error', { error, processInfo });
-      });
-
-      // Update process info
-      await Process.findByIdAndUpdate(processInfo._id, {
-        status: 'running',
-        pid: this.pythonProcess.pid
-      });
-
+      // Reset buffers
+      this.outputBuffer = '';
+      this.errorBuffer = '';
       this.isRunning = true;
-      console.log(`Python process started with PID ${this.pythonProcess.pid}`);
+
+      // Set up event handlers
+      this.process.stdout.on('data', (data) => this.handleStdout(data));
+      this.process.stderr.on('data', (data) => this.handleStderr(data));
       
-      // Start the watchdog timer
-      this.startWatchdog();
+      this.process.on('error', (error) => {
+        this.logger.error(`Process error: ${error.message}`);
+        this.isRunning = false;
+      });
       
-      return {
-        success: true,
-        processInfo: {
-          ...processInfo.toObject(),
-          pid: this.pythonProcess.pid,
-          status: 'running'
-        }
+      this.process.on('close', (code) => {
+        this.logger.log(`Process exited with code ${code}`);
+        this.isRunning = false;
+      });
+
+      return { 
+        success: true, 
+        message: 'Python process started successfully',
+        pid: this.process.pid
       };
     } catch (error) {
-      console.error('Error starting Python process:', error);
-      
-      try {
-        await Process.findByIdAndUpdate(processInfo._id, {
-          status: 'error',
-          $push: { logs: { level: 'error', message: error.message } }
-        });
-      } catch (dbError) {
-        console.error('Error updating process status after start error:', dbError);
-      }
-      
+      this.logger.error(`Error starting process: ${error.message}`);
       return { success: false, error: error.message };
     }
   }
 
   async stop() {
-    this.stopWatchdog();
-    
-    if (!this.isRunning || !this.pythonProcess) {
-      console.log('No process to stop');
-      return { success: true, message: 'No process was running' };
+    if (!this.isRunning || !this.process) {
+      return { success: true, message: 'No running process to stop' };
     }
 
-    console.log('Stopping Python process...');
-    
     try {
-      // Send shutdown command to allow clean exit
-      this.sendMessage({
-        type: MESSAGE_TYPES.SYSTEM,
-        payload: { command: 'shutdown' }
-      });
+      this.logger.log('Stopping Python process...');
       
-      // Wait for graceful shutdown
-      const gracefulExit = await new Promise<boolean>((resolve) => {
-        // Set a timeout for force kill
-        const forceKillTimeout = setTimeout(() => {
-          console.log('Force killing Python process after timeout');
-          resolve(false);
-        }, 5000);
-        
-        // Listen for exit event
-        this.pythonProcess.once('exit', () => {
-          clearTimeout(forceKillTimeout);
-          resolve(true);
+      // Send SIGTERM first for graceful shutdown
+      this.process.kill('SIGTERM');
+      
+      // Set a timeout to force kill if necessary
+      const killTimeout = setTimeout(() => {
+        if (this.isRunning) {
+          this.logger.log('Force killing process with SIGKILL');
+          this.process.kill('SIGKILL');
+        }
+      }, 5000);
+      
+      // Wait for process to exit
+      return new Promise((resolve) => {
+        this.process.once('close', (code) => {
+          clearTimeout(killTimeout);
+          this.isRunning = false;
+          this.logger.log(`Process stopped with exit code: ${code}`);
+          resolve({ success: true, message: `Process stopped with exit code: ${code}` });
         });
       });
-      
-      // If process didn't exit gracefully, force kill it
-      if (!gracefulExit && this.pythonProcess) {
-        console.log('Force killing Python process');
-        this.pythonProcess.kill('SIGKILL');
-      }
-      
-      // Update database
-      await Process.findByIdAndUpdate(this.currentProcessInfo._id, {
-        status: 'stopped',
-        endTime: new Date(),
-        $push: { logs: { level: 'info', message: 'Process stopped' } }
-      });
-      
-      this.isRunning = false;
-      this.pythonProcess = null;
-      
-      return { success: true, message: 'Process stopped' };
     } catch (error) {
-      console.error('Error stopping Python process:', error);
-      
-      // Force kill as a last resort
-      if (this.pythonProcess) {
-        try {
-          this.pythonProcess.kill('SIGKILL');
-        } catch (killError) {
-          console.error('Error force killing process:', killError);
-        }
-      }
-      
-      this.isRunning = false;
-      this.pythonProcess = null;
-      
+      this.logger.error(`Error stopping process: ${error.message}`);
       return { success: false, error: error.message };
     }
   }
 
-  async restart() {
-    console.log('Restarting Python process...');
+  handleStdout(data) {
+    const output = data.toString();
+    this.logger.log(`STDOUT: ${output.trim()}`);
+    this.outputBuffer += output;
     
+    // Keep buffer size reasonable
+    if (this.outputBuffer.length > 100000) {
+      this.outputBuffer = this.outputBuffer.slice(-50000);
+    }
+  }
+
+  handleStderr(data) {
+    const output = data.toString();
+    this.logger.error(`STDERR: ${output.trim()}`);
+    this.errorBuffer += output;
+    
+    // Keep buffer size reasonable
+    if (this.errorBuffer.length > 100000) {
+      this.errorBuffer = this.errorBuffer.slice(-50000);
+    }
+  }
+
+  async sendMessage(message) {
+    if (!this.isRunning || !this.process) {
+      return { success: false, error: 'No running process to send message to' };
+    }
+
+    try {
+      const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
+      this.logger.log(`Sending message: ${messageStr.substring(0, 100)}...`);
+      
+      this.process.stdin.write(messageStr + '\n');
+      return { success: true, message: 'Message sent' };
+    } catch (error) {
+      this.logger.error(`Error sending message: ${error.message}`);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getStatus() {
+    return {
+      success: true,
+      isRunning: this.isRunning,
+      pid: this.process?.pid,
+      uptime: this.process && this.isRunning ? process.uptime() : 0
+    };
+  }
+
+  async getLogs() {
+    return {
+      stdout: this.outputBuffer,
+      stderr: this.errorBuffer
+    };
+  }
+
+  async restart() {
     try {
       await this.stop();
-      const result = await this.start();
-      
-      // Update restart count
-      if (result.success && this.currentProcessInfo) {
-        await Process.findByIdAndUpdate(this.currentProcessInfo._id, {
-          $inc: { restartCount: 1 },
-          $push: { logs: { level: 'info', message: 'Process restarted' } }
-        });
-      }
-      
-      return result;
+      return await this.start();
     } catch (error) {
       console.error('Error restarting Python process:', error);
       return { success: false, error: error.message };
     }
   }
-
-  sendMessage(message) {
-    if (!this.isRunning || !this.pythonProcess) {
-      console.error('Cannot send message - Python process is not running');
-      return false;
-    }
-
-    try {
-      const messageStr = typeof message === 'string' 
-        ? message 
-        : createMessage(message.type, message.payload);
-        
-      this.pythonProcess.stdin.write(messageStr + '\n');
-      return true;
-    } catch (error) {
-      console.error('Error sending message to Python process:', error);
-      return false;
-    }
-  }
-
-  async getStatus() {
-    if (!this.isRunning) {
-      return { isRunning: false };
-    }
-
-    try {
-      // Get updated process info from database
-      const processInfo = await Process.findById(this.currentProcessInfo._id);
-      
-      return {
-        isRunning: this.isRunning,
-        processInfo: processInfo ? processInfo.toObject() : this.currentProcessInfo
-      };
-    } catch (error) {
-      console.error('Error getting process status:', error);
-      return {
-        isRunning: this.isRunning,
-        processInfo: this.currentProcessInfo,
-        error: error.message
-      };
-    }
-  }
 }
 
-// Create and export a singleton instance
 const processManagerService = new ProcessManagerService();
 module.exports = processManagerService;

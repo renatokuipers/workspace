@@ -16,6 +16,7 @@ class WebSocketClient {
 
   connect() {
     if (this.socket?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected, skipping connection');
       return;
     }
 
@@ -29,15 +30,21 @@ class WebSocketClient {
     const wsHost = window.location.host;
     const wsUrl = `${wsProtocol}//${wsHost}${this.path}?sessionId=${this.sessionId}`;
 
+    console.log(`Attempting to connect to WebSocket URL: ${wsUrl}`);
+
     try {
       this.socket = new WebSocket(wsUrl);
+
+      console.log('WebSocket instance created');
 
       this.socket.onopen = this.handleOpen.bind(this);
       this.socket.onmessage = this.handleMessage.bind(this);
       this.socket.onclose = this.handleClose.bind(this);
       this.socket.onerror = this.handleError.bind(this);
+
+      console.log('WebSocket event handlers attached');
     } catch (error) {
-      console.error('WebSocket connection error:', error);
+      console.error('WebSocket connection error in constructor:', error);
       this.scheduleReconnect();
     }
   }
@@ -70,11 +77,11 @@ class WebSocketClient {
     try {
       const data = JSON.parse(event.data);
       const eventType = data.type || 'message';
-      
+
       if (this.eventListeners[eventType]) {
         this.eventListeners[eventType].forEach(listener => listener(data));
       }
-      
+
       // Also trigger 'message' event for all messages
       if (eventType !== 'message' && this.eventListeners['message']) {
         this.eventListeners['message'].forEach(listener => listener(data));
@@ -86,17 +93,20 @@ class WebSocketClient {
 
   private handleClose(event: CloseEvent) {
     console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
+    console.log('WebSocket readyState at close time:', this.socket?.readyState);
+    console.log('Was connected before close:', this.isConnected);
     this.isConnected = false;
     this.socket = null;
-    
+
     this.reconnectAttempts++;
     this.scheduleReconnect();
   }
 
   private handleError(event: Event) {
-    console.error('WebSocket error:', event);
+    console.error('WebSocket error with detailed event:', event);
+    console.log('WebSocket readyState at error time:', this.socket?.readyState);
     this.isConnected = false;
-    
+
     // Socket will close automatically after an error
   }
 
@@ -183,7 +193,7 @@ class WebSocketClient {
       this.socket = null;
     }
     this.isConnected = false;
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
