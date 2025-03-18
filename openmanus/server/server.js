@@ -6,6 +6,7 @@ const session = require("express-session");
 const MongoStore = require('connect-mongo');
 const basicRoutes = require("./routes/index");
 const browserRoutes = require("./routes/browserRoutes");
+const flowRoutes = require("./routes/flowRoutes");
 const { router: terminalRouter, setupTerminalWebSocket } = require("./routes/terminalRoutes");
 const { connectDB } = require("./config/database");
 const cors = require("cors");
@@ -53,6 +54,7 @@ setupTerminalWebSocket(server);
 app.use(basicRoutes);
 app.use('/api/terminal', terminalRouter);
 app.use('/api/browser', browserRoutes);
+app.use('/api', flowRoutes);
 
 // If no routes handled the request, it's a 404
 app.use((req, res, next) => {

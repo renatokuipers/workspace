@@ -8,6 +8,7 @@ import { Layout } from "./components/Layout"
 import { ProtectedRoute } from "./components/ProtectedRoute"
 import { Home } from "./pages/Home"
 import { Projects } from "./pages/Projects"
+import { ErrorBoundary } from "./components/ErrorBoundary"
 
 function App() {
   return (
@@ -19,7 +20,11 @@ function App() {
             <Route path="/register" element={<Register />} />
             <Route element={<Layout />}>
               <Route path="/" element={<ProtectedRoute><Projects /></ProtectedRoute>} />
-              <Route path="/chat/:projectId" element={<ProtectedRoute><Home /></ProtectedRoute>} />
+              <Route path="/chat/:projectId" element={<ProtectedRoute>
+                <ErrorBoundary>
+                  <Home />
+                </ErrorBoundary>
+              </ProtectedRoute>} />
             </Route>
           </Routes>
           <Toaster
