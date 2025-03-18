@@ -9,13 +9,29 @@ class AgentService {
     this.connections = new Map(); // Map of client connections by sessionId
     this.agents = new Map(); // Map of agent processes by sessionId
     this.buffers = new Map(); // Map of message buffers by sessionId
+    this.pingIntervals = new Map(); // Map of ping intervals by sessionId
   }
 
   // Add a WebSocket connection for a session
   addConnection(sessionId, ws) {
+    console.log(`Adding new WebSocket connection for session ${sessionId}`);
     this.connections.set(sessionId, ws);
+
     // Initialize buffer for this session
     this.buffers.set(sessionId, '');
+
+    // Setup ping interval to keep connection alive
+    const pingInterval = setInterval(() => {
+      if (ws.readyState === 1) { // OPEN
+        console.log(`Sending ping to client ${sessionId}`);
+        ws.ping();
+      } else {
+        console.log(`Cannot ping client ${sessionId}, WebSocket is not open (state: ${ws.readyState})`);
+        this.clearPingInterval(sessionId);
+      }
+    }, 30000); // Ping every 30 seconds
+
+    this.pingIntervals.set(sessionId, pingInterval);
 
     // Inform client that connection is established
     this.sendToClient(sessionId, {
@@ -27,13 +43,30 @@ class AgentService {
     return true;
   }
 
+  // Clear ping interval for a session
+  clearPingInterval(sessionId) {
+    if (this.pingIntervals.has(sessionId)) {
+      clearInterval(this.pingIntervals.get(sessionId));
+      this.pingIntervals.delete(sessionId);
+      console.log(`Cleared ping interval for session ${sessionId}`);
+    }
+  }
+
   // Remove a connection
   removeConnection(sessionId) {
+    console.log(`Removing connection for session ${sessionId}`);
+
     // Kill any running agent process
     this.stopAgent(sessionId);
+
+    // Clear ping interval
+    this.clearPingInterval(sessionId);
+
     // Remove the connection and buffer
     this.connections.delete(sessionId);
     this.buffers.delete(sessionId);
+
+    console.log(`Connection resources cleaned up for session ${sessionId}`);
   }
 
   // Start an agent process
@@ -41,6 +74,7 @@ class AgentService {
     try {
       // Don't start a new agent if one is already running for this session
       if (this.agents.has(sessionId)) {
+        console.log(`Agent already running for session ${sessionId}`);
         return true;
       }
 
@@ -76,6 +110,13 @@ class AgentService {
         });
       });
 
+      // Check immediately if the WebSocket is still connected
+      if (!this.isClientConnected(sessionId)) {
+        console.log(`Client for session ${sessionId} is no longer connected, stopping agent`);
+        this.stopAgent(sessionId);
+        return false;
+      }
+
       // If we have an initial message, send it to the agent
       if (initialMessage) {
         await this.sendToAgent(sessionId, initialMessage);
@@ -91,6 +132,12 @@ class AgentService {
       });
       return false;
     }
+  }
+
+  // Check if client is still connected
+  isClientConnected(sessionId) {
+    const ws = this.connections.get(sessionId);
+    return ws && ws.readyState === 1; // 1 = WebSocket.OPEN
   }
 
   // Stop an agent process
@@ -135,6 +182,12 @@ class AgentService {
     }
 
     try {
+      // Check if the process stdin is writable
+      if (!agentProcess.stdin.writable) {
+        console.error(`Agent process stdin is not writable for session ${sessionId}`);
+        return false;
+      }
+
       const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
       console.log(`Sending message to agent for session ${sessionId}: ${messageStr.substring(0, 100)}...`);
       agentProcess.stdin.write(messageStr + '\n');
@@ -149,12 +202,17 @@ class AgentService {
   sendToClient(sessionId, message) {
     const ws = this.connections.get(sessionId);
     if (ws && ws.readyState === 1) { // 1 = WebSocket.OPEN
-      const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
-      console.log(`Sending message to client for session ${sessionId}: ${messageStr.substring(0, 100)}...`);
-      ws.send(messageStr);
-      return true;
+      try {
+        const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
+        console.log(`Sending message to client for session ${sessionId}: ${messageStr.substring(0, 100)}...`);
+        ws.send(messageStr);
+        return true;
+      } catch (error) {
+        console.error(`Error sending message to client for session ${sessionId}:`, error);
+        return false;
+      }
     }
-    console.log(`Cannot send message to client for session ${sessionId}: WebSocket not open`);
+    console.log(`Cannot send message to client for session ${sessionId}: WebSocket not open (state: ${ws?.readyState})`);
     return false;
   }
 
@@ -162,7 +220,25 @@ class AgentService {
   async handleClientMessage(sessionId, message) {
     try {
       console.log(`Received message from client for session ${sessionId}: ${message.substring(0, 100)}...`);
-      const parsedMessage = typeof message === 'string' ? JSON.parse(message) : message;
+
+      let parsedMessage;
+      try {
+        parsedMessage = typeof message === 'string' ? JSON.parse(message) : message;
+      } catch (error) {
+        console.error(`Failed to parse message from client ${sessionId}:`, error);
+        this.sendToClient(sessionId, {
+          type: 'error',
+          message: 'Invalid message format'
+        });
+        return false;
+      }
+
+      // Handle ping/pong messages
+      if (parsedMessage.type === 'ping') {
+        console.log(`Received ping from client ${sessionId}`);
+        this.sendToClient(sessionId, { type: 'pong', timestamp: Date.now() });
+        return true;
+      }
 
       // Store user message in the database
       if (parsedMessage.type === 'chat' && parsedMessage.content) {
@@ -193,7 +269,7 @@ class AgentService {
     try {
       const dataStr = data.toString();
       console.log(`Received output from agent for session ${sessionId}: ${dataStr.substring(0, 100)}...`);
-      
+
       // Add data to the buffer for this session
       const buffer = this.buffers.get(sessionId) + dataStr;
       this.buffers.set(sessionId, buffer);
@@ -231,7 +307,14 @@ class AgentService {
   async processAgentMessage(sessionId, messageStr) {
     try {
       console.log(`Processing agent message for session ${sessionId}: ${messageStr.substring(0, 100)}...`);
-      const message = parseMessage(messageStr);
+
+      let message;
+      try {
+        message = parseMessage(messageStr);
+      } catch (error) {
+        console.error(`Failed to parse message from agent for session ${sessionId}:`, error);
+        return;
+      }
 
       if (!message) {
         console.warn(`Received invalid message from agent for session ${sessionId}:`, messageStr);
@@ -261,7 +344,7 @@ class AgentService {
   async storeMessage({ id, role, content, projectId }) {
     try {
       console.log(`Storing ${role} message with ID ${id} for project ${projectId || 'default'}`);
-      
+
       // Find or create a conversation
       let conversation = await Conversation.findOne({ projectId });
 

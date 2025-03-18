@@ -8,6 +8,8 @@ class WebSocketClient {
   private messageBuffer: { id: string; content: string; sent: boolean }[] = [];
   private reconnectTimer: NodeJS.Timeout | null = null;
   private sessionId: string | null = null;
+  private pingTimer: NodeJS.Timeout | null = null;
+  private lastPongTime: number = 0;
 
   constructor(private path: string) {
     // Generate a unique session ID
@@ -16,6 +18,7 @@ class WebSocketClient {
 
   connect() {
     if (this.socket?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected, skipping connection attempt');
       return;
     }
 
@@ -25,9 +28,9 @@ class WebSocketClient {
       this.reconnectTimer = null;
     }
 
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsHost = window.location.host;
-    const wsUrl = `${wsProtocol}//${wsHost}${this.path}?sessionId=${this.sessionId}`;
+    const wsUrl = `${this.path}?sessionId=${this.sessionId}`;
+
+    console.log(`Connecting WebSocket to ${wsUrl}`);
 
     try {
       this.socket = new WebSocket(wsUrl);
@@ -46,6 +49,10 @@ class WebSocketClient {
     console.log('WebSocket connection established');
     this.isConnected = true;
     this.reconnectAttempts = 0;
+    this.lastPongTime = Date.now();
+
+    // Set up ping to keep connection alive
+    this.setupPing();
 
     // Send any queued messages
     while (this.messageQueue.length > 0) {
@@ -66,15 +73,47 @@ class WebSocketClient {
     }
   }
 
+  private setupPing() {
+    // Clear any existing ping timer
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+    }
+
+    // Send ping every 20 seconds to keep connection alive
+    this.pingTimer = setInterval(() => {
+      if (this.isConnected && this.socket?.readyState === WebSocket.OPEN) {
+        console.log('Sending ping to server');
+        this.send({ type: 'ping', timestamp: Date.now() });
+
+        // Check if we haven't received a pong in a while (45 seconds)
+        const now = Date.now();
+        if (now - this.lastPongTime > 45000) {
+          console.warn('No pong received for 45 seconds, reconnecting...');
+          this.reconnect();
+        }
+      } else {
+        console.log('Cannot send ping, WebSocket is not connected');
+      }
+    }, 20000);
+  }
+
   private handleMessage(event: MessageEvent) {
     try {
       const data = JSON.parse(event.data);
       const eventType = data.type || 'message';
-      
+
+      console.log(`Received WebSocket message of type: ${eventType}`);
+
+      // Update last pong time if we receive a pong
+      if (eventType === 'pong') {
+        this.lastPongTime = Date.now();
+        console.log('Received pong from server');
+      }
+
       if (this.eventListeners[eventType]) {
         this.eventListeners[eventType].forEach(listener => listener(data));
       }
-      
+
       // Also trigger 'message' event for all messages
       if (eventType !== 'message' && this.eventListeners['message']) {
         this.eventListeners['message'].forEach(listener => listener(data));
@@ -88,16 +127,31 @@ class WebSocketClient {
     console.log(`WebSocket connection closed. Code: ${event.code}, Reason: ${event.reason}`);
     this.isConnected = false;
     this.socket = null;
-    
-    this.reconnectAttempts++;
+
+    // Clear ping timer
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+
     this.scheduleReconnect();
   }
 
   private handleError(event: Event) {
     console.error('WebSocket error:', event);
     this.isConnected = false;
-    
+
     // Socket will close automatically after an error
+  }
+
+  private reconnect() {
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+    }
+    this.isConnected = false;
+    this.reconnectAttempts++;
+    this.scheduleReconnect();
   }
 
   private scheduleReconnect() {
@@ -107,11 +161,13 @@ class WebSocketClient {
 
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000); // Exponential backoff up to 30s
-      console.log(`Scheduling reconnection in ${delay}ms`);
+      console.log(`Scheduling reconnection in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
       this.reconnectTimer = setTimeout(() => {
         this.connect();
       }, delay);
+    } else {
+      console.log(`Maximum reconnection attempts (${this.maxReconnectAttempts}) reached, giving up`);
     }
   }
 
@@ -146,19 +202,30 @@ class WebSocketClient {
     const messageStr = typeof message === 'string' ? message : JSON.stringify(message);
 
     if (!this.isConnected) {
+      console.log('WebSocket not connected, queueing message');
       // Queue message to be sent when connection is established
       this.messageQueue.push({ id: messageId, content: messageStr, sent: false });
       return messageId;
     }
 
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(messageStr);
+      console.log(`Sending WebSocket message: ${messageStr.substring(0, 50)}...`);
+      try {
+        this.socket.send(messageStr);
 
-      // Mark as sent
-      const bufferItem = this.messageBuffer.find(m => m.id === messageId);
-      if (bufferItem) {
-        bufferItem.sent = true;
+        // Mark as sent
+        const bufferItem = this.messageBuffer.find(m => m.id === messageId);
+        if (bufferItem) {
+          bufferItem.sent = true;
+        }
+      } catch (error) {
+        console.error('Error sending WebSocket message:', error);
+        // If sending fails, try to reconnect
+        this.reconnect();
       }
+    } else {
+      console.log(`WebSocket not ready, queueing message (readyState: ${this.socket?.readyState})`);
+      this.messageQueue.push({ id: messageId, content: messageStr, sent: false });
     }
 
     return messageId;
@@ -183,10 +250,15 @@ class WebSocketClient {
       this.socket = null;
     }
     this.isConnected = false;
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
     }
   }
 

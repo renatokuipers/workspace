@@ -64,8 +64,13 @@ router.delete('/chat/message/:messageId', async (req, res) => {
 const setupAgentWebSocket = (server) => {
   const wss = new WebSocketServer({
     server,
-    path: '/ws/agent'
+    path: '/ws/agent',
+    // Add ping/pong to detect broken connections
+    pingInterval: 30000,
+    pingTimeout: 10000
   });
+
+  console.log('WebSocket server for agent communication initialized');
 
   wss.on('connection', (ws, req) => {
     try {
@@ -74,44 +79,73 @@ const setupAgentWebSocket = (server) => {
       const sessionId = url.searchParams.get('sessionId') ||
                         Date.now().toString(36) + Math.random().toString(36).substring(2);
 
-      console.log(`New WebSocket connection established. Session ID: ${sessionId}`);
+      console.log(`New WebSocket connection established. Session ID: ${sessionId}, Client IP: ${req.socket.remoteAddress}`);
 
       // Register the connection
       agentService.addConnection(sessionId, ws);
 
+      // Handle pong messages
+      ws.on('pong', () => {
+        console.log(`Received pong from client ${sessionId}`);
+      });
+
       // Handle messages from the client
       ws.on('message', async (message) => {
         try {
-          console.log(`Received message from client (session ${sessionId})`);
+          console.log(`Received message from client (session ${sessionId}), length: ${message.length}`);
           await agentService.handleClientMessage(sessionId, message.toString());
         } catch (error) {
           console.error('Error handling WebSocket message:', error);
-          ws.send(JSON.stringify({
-            type: 'error',
-            message: `Failed to process message: ${error.message}`
-          }));
+          // Try to send error message back to client
+          try {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: `Failed to process message: ${error.message}`
+            }));
+          } catch (sendError) {
+            console.error('Error sending error message to client:', sendError);
+          }
         }
       });
 
       // Handle WebSocket closure
-      ws.on('close', () => {
-        console.log(`WebSocket connection closed. Session ID: ${sessionId}`);
+      ws.on('close', (code, reason) => {
+        console.log(`WebSocket connection closed. Session ID: ${sessionId}, Code: ${code}, Reason: ${reason || 'No reason provided'}`);
         agentService.removeConnection(sessionId);
       });
 
       // Handle WebSocket errors
       ws.on('error', (error) => {
-        console.error('WebSocket error:', error);
+        console.error(`WebSocket error for session ${sessionId}:`, error);
         agentService.removeConnection(sessionId);
       });
+
+      // Send a welcome message to confirm connection
+      ws.send(JSON.stringify({
+        type: 'system',
+        message: 'Connection established',
+        sessionId
+      }));
+
     } catch (error) {
       console.error('Error setting up agent WebSocket:', error);
-      ws.send(JSON.stringify({
-        type: 'error',
-        message: `Failed to initialize agent connection: ${error.message}`
-      }));
+      try {
+        ws.send(JSON.stringify({
+          type: 'error',
+          message: `Failed to initialize agent connection: ${error.message}`
+        }));
+      } catch (sendError) {
+        console.error('Error sending initialization error to client:', sendError);
+      }
     }
   });
+
+  // Monitor the WebSocket server for errors
+  wss.on('error', (error) => {
+    console.error('WebSocket server error:', error);
+  });
+
+  return wss;
 };
 
 module.exports = { router, setupAgentWebSocket };
