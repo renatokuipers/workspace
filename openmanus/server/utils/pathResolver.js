@@ -70,32 +70,42 @@ async function resolvePythonPath() {
  */
 async function resolveScriptPath(scriptName = 'run_flow.py') {
   try {
-    // First, try to use FLOW_SCRIPT_PATH from environment
+    // First, try to use the environment variable
     if (process.env.FLOW_SCRIPT_PATH) {
-      if (fs.existsSync(process.env.FLOW_SCRIPT_PATH)) {
-        console.log(`Found flow script at environment path: ${process.env.FLOW_SCRIPT_PATH}`);
-        return process.env.FLOW_SCRIPT_PATH;
+      const envPath = process.env.FLOW_SCRIPT_PATH;
+      // Check if path is absolute
+      if (path.isAbsolute(envPath)) {
+        if (fs.existsSync(envPath)) {
+          return envPath;
+        }
+        console.warn(`FLOW_SCRIPT_PATH environment variable is set but file does not exist: ${envPath}`);
+      } else {
+        // Try different combinations with the relative path
+        const possiblePaths = [
+          path.join(process.cwd(), envPath),
+          path.join(process.cwd(), '..', envPath),
+          // Remove the ./ prefix if it exists
+          path.join(process.cwd(), envPath.replace(/^\.\//g, '')),
+          path.join(process.cwd(), '..', envPath.replace(/^\.\//g, ''))
+        ];
+        
+        for (const possiblePath of possiblePaths) {
+          if (fs.existsSync(possiblePath)) {
+            return possiblePath;
+          }
+        }
+        console.warn(`FLOW_SCRIPT_PATH environment variable is set but file does not exist at resolved paths`);
       }
-      console.warn(`FLOW_SCRIPT_PATH environment variable is set but file does not exist: ${process.env.FLOW_SCRIPT_PATH}`);
     }
 
-    // Then try SCRIPT_PATH for backwards compatibility
-    if (process.env.SCRIPT_PATH) {
-      if (fs.existsSync(process.env.SCRIPT_PATH)) {
-        console.log(`Found flow script at legacy script path: ${process.env.SCRIPT_PATH}`);
-        return process.env.SCRIPT_PATH;
-      }
-      console.warn(`SCRIPT_PATH environment variable is set but file does not exist: ${process.env.SCRIPT_PATH}`);
-    }
-
-    // Then try directories relative to current working directory
+    // Then try standard script locations
     const potentialPaths = [
-      // Main directory
+      // Script is in current directory
       path.join(process.cwd(), scriptName),
-
-      // Core directory
-      path.join(process.cwd(), 'core', scriptName),
-
+      
+      // Script is in parent directory
+      path.join(process.cwd(), '..', scriptName),
+      
       // Python directory
       path.join(process.cwd(), 'python', scriptName),
 
@@ -114,8 +124,11 @@ async function resolveScriptPath(scriptName = 'run_flow.py') {
       // A more complicated relative path
       path.join(process.cwd(), '..', 'pythagora-core', 'workspace', 'openmanus', scriptName),
       
-      // Openmanus-specific path as seen in the logs
+      // Openmanus-specific paths
       path.join(process.cwd(), 'openmanus', scriptName),
+      path.join(process.cwd(), '..', 'openmanus', scriptName),
+      path.resolve(process.cwd(), '..', 'openmanus', scriptName),
+      path.resolve(process.cwd(), 'openmanus', scriptName),
     ];
 
     for (const scriptPath of potentialPaths) {

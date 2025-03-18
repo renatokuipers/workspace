@@ -17,12 +17,25 @@ export const getTerminalWebSocket = (id?: string, cols?: number, rows?: number) 
     if (cols) params.append('cols', cols.toString());
     if (rows) params.append('rows', rows.toString());
 
-    const path = `/ws/terminal?${params.toString()}`;
+    // Make sure sessionId is added as a separate query parameter
+    const sessionId = Date.now().toString(36) + Math.random().toString(36).substring(2);
+
+    // Update the path construction to properly include both query strings
+    const path = `/ws/terminal?${params.toString()}&sessionId=${sessionId}`;
+
+    console.log(`Creating WebSocket with path: ${path}`);
+
     terminalWebSocket = new WebSocketClient(path);
     terminalWebSocket.connect();
 
     // Forward terminal messages to registered listeners
     terminalWebSocket.on('message', (data: any) => {
+      // Handle case where server created a new terminal for us
+      if (data.type === 'connected' && data.terminalId && !terminalId) {
+        console.log(`Received new terminal ID from server: ${data.terminalId}`);
+        terminalId = data.terminalId;
+      }
+
       terminalListeners.forEach(listener => listener(data));
     });
   }

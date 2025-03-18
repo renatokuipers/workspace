@@ -10,6 +10,14 @@ const mongoose = require('mongoose');
 // Load environment variables
 dotenv.config();
 
+// Debug environment variables
+console.log('Environment variables:');
+console.log('PORT:', process.env.PORT);
+console.log('PYTHON_PATH:', process.env.PYTHON_PATH);
+console.log('FLOW_SCRIPT_PATH:', process.env.FLOW_SCRIPT_PATH);
+console.log('Current working directory:', process.cwd());
+console.log('Absolute path to openmanus directory:', path.resolve(process.cwd(), 'openmanus'));
+
 // Import routes
 const chatRoutes = require('./routes/chatRoutes');
 const terminalRoutes = require('./routes/terminalRoutes');
@@ -74,7 +82,7 @@ if (process.env.USE_MONGODB === 'true') {
   const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/openmanus';
   mongoose.connect(mongoUri)
     .then(() => {
-      console.log('Connected to MongoDB successfully');
+      console.log('MongoDB Connected:', mongoUri.split('@').pop());
     })
     .catch(err => {
       console.error('MongoDB connection error:', err);
@@ -127,11 +135,31 @@ server.on('error', (error) => {
   }
 });
 
-// Function to start the server
-function startServer(port) {
+// Function to start the server with port fallback
+function startServer(port, maxRetries = 3, retryCount = 0) {
   server.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
     console.log(`NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+  }).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      if (retryCount < maxRetries) {
+        // Try the next port
+        const nextPort = port + 1;
+        console.log(`Port ${port} is already in use, trying port ${nextPort}...`);
+
+        // Update the PORT environment variable so other parts of the app use the same port
+        process.env.PORT = nextPort;
+
+        // Retry with new port
+        startServer(nextPort, maxRetries, retryCount + 1);
+      } else {
+        console.error(`All ports in range ${PORT}-${PORT + maxRetries} are in use. Please manually close some server instances.`);
+        process.exit(1);
+      }
+    } else {
+      console.error(`Server error: ${err.message}`);
+      process.exit(1);
+    }
   });
 }
 

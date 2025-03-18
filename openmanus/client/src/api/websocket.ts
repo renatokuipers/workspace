@@ -28,13 +28,13 @@ class WebSocketClient {
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = window.location.host;
+    // Ensure WebSocket path is correctly formatted
     const wsUrl = `${wsProtocol}//${wsHost}${this.path}?sessionId=${this.sessionId}`;
 
     console.log(`Attempting to connect to WebSocket URL: ${wsUrl}`);
 
     try {
       this.socket = new WebSocket(wsUrl);
-
       console.log('WebSocket instance created');
 
       this.socket.onopen = this.handleOpen.bind(this);
@@ -103,7 +103,7 @@ class WebSocketClient {
   }
 
   private handleError(event: Event) {
-    console.error('WebSocket error with detailed event:', event);
+    console.error('WebSocket error:', event);
     console.log('WebSocket readyState at error time:', this.socket?.readyState);
     this.isConnected = false;
 
