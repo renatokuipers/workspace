@@ -1,138 +1,68 @@
 // openmanus/client/src/api/terminal.ts
 import api from './api';
-import WebSocketClient from './websocket';
 
-let terminalWebSocket: WebSocketClient | null = null;
-let terminalId: string | null = null;
-let terminalListeners: Array<(data: any) => void> = [];
-
-// Get or create terminal WebSocket connection
-export const getTerminalWebSocket = (id?: string, cols?: number, rows?: number) => {
-  if (!terminalWebSocket) {
-    const params = new URLSearchParams();
-    if (id) {
-      terminalId = id;
-      params.append('id', id);
-    }
-    if (cols) params.append('cols', cols.toString());
-    if (rows) params.append('rows', rows.toString());
-
-    // Make sure sessionId is added as a separate query parameter
-    const sessionId = Date.now().toString(36) + Math.random().toString(36).substring(2);
-
-    // Update the path construction to properly include both query strings
-    const path = `/ws/terminal?${params.toString()}&sessionId=${sessionId}`;
-
-    console.log(`Creating WebSocket with path: ${path}`);
-
-    terminalWebSocket = new WebSocketClient(path);
-    terminalWebSocket.connect();
-
-    // Forward terminal messages to registered listeners
-    terminalWebSocket.on('message', (data: any) => {
-      // Handle case where server created a new terminal for us
-      if (data.type === 'connected' && data.terminalId && !terminalId) {
-        console.log(`Received new terminal ID from server: ${data.terminalId}`);
-        terminalId = data.terminalId;
-      }
-
-      terminalListeners.forEach(listener => listener(data));
-    });
-  }
-  return terminalWebSocket;
-};
-
-// Description: Execute a command in the terminal
-// Endpoint: WebSocket /ws/terminal
-// Request: { type: 'input', data: string }
-// Response: Terminal output via WebSocket
+// Description: Execute terminal command
+// Endpoint: POST /api/terminal/execute
+// Request: { command: string }
+// Response: { output: string, error?: string, status: 'success' | 'error' }
 export const executeCommand = async (command: string) => {
-  const ws = getTerminalWebSocket();
+  // Mock response
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      const mockResponses: { [key: string]: { output: string; error?: string; status: 'success' | 'error' } } = {
+        'ls': {
+          output: 'Documents/\nDownloads/\nPictures/\nMusic/\nVideos/',
+          status: 'success'
+        },
+        'pwd': {
+          output: '/home/user',
+          status: 'success'
+        },
+        'date': {
+          output: new Date().toString(),
+          status: 'success'
+        },
+        'whoami': {
+          output: 'user',
+          status: 'success'
+        },
+        'echo': {
+          output: command.slice(5),
+          status: 'success'
+        },
+        'npm install': {
+          output: '⠋ Installing dependencies...\n' +
+                 'added 1234 packages in 2m 34s\n' +
+                 '✓ Done\n',
+          status: 'success'
+        },
+        'python': {
+          error: 'Command not found: python',
+          status: 'error'
+        },
+        'invalid_command': {
+          error: 'Command not found: invalid_command',
+          status: 'error'
+        },
+        'git push': {
+          error: 'fatal: not a git repository (or any of the parent directories): .git',
+          status: 'error'
+        },
+        'test': {
+          output: 'Running tests...\n\n' +
+                 '  Test 1: ✓ Passed\n' +
+                 '  Test 2: ✓ Passed\n' +
+                 '  Test 3: ✗ Failed\n\n' +
+                 'Test Summary:\n' +
+                 '  Total: 3\n' +
+                 '  Passed: 2\n' +
+                 '  Failed: 1\n',
+          status: 'success'
+        }
+      };
 
-  // Return a promise that resolves immediately
-  return new Promise<void>((resolve, reject) => {
-    if (ws.isReady()) {
-      ws.send({
-        type: 'input',
-        data: command
-      });
-      resolve();
-    } else {
-      reject(new Error('Terminal WebSocket not connected'));
-    }
+      const cmdKey = Object.keys(mockResponses).find(key => command.startsWith(key)) || 'invalid_command';
+      resolve(mockResponses[cmdKey]);
+    }, 300);
   });
-};
-
-// Resize the terminal
-export const resizeTerminal = (cols: number, rows: number) => {
-  const ws = getTerminalWebSocket();
-
-  if (ws.isReady()) {
-    ws.send({
-      type: 'resize',
-      cols,
-      rows
-    });
-    return true;
-  }
-  return false;
-};
-
-// Register to receive terminal output
-export const onTerminalData = (callback: (data: any) => void) => {
-  terminalListeners.push(callback);
-  return () => {
-    terminalListeners = terminalListeners.filter(listener => listener !== callback);
-  };
-};
-
-// Create a new terminal
-export const createTerminal = async (cols: number = 80, rows: number = 24) => {
-  try {
-    // Use REST API to create a terminal
-    const response = await api.post('/api/terminal', {
-      cols,
-      rows
-    });
-
-    const data = response.data;
-
-    if (data.success) {
-      // Connect to the terminal via WebSocket
-      getTerminalWebSocket(data.terminalId, cols, rows);
-      return { success: true, terminalId: data.terminalId };
-    } else {
-      throw new Error(data.error || 'Failed to create terminal');
-    }
-  } catch (error) {
-    console.error('Error creating terminal:', error);
-    throw new Error(error?.response?.data?.error || (error instanceof Error ? error.message : 'Failed to create terminal'));
-  }
-};
-
-// Close the terminal
-export const closeTerminal = async () => {
-  try {
-    if (terminalId) {
-      // Use REST API to terminate the terminal
-      const response = await api.post('/api/terminal/terminate', {
-        terminalId
-      });
-
-      const data = response.data;
-
-      // Disconnect WebSocket
-      if (terminalWebSocket) {
-        terminalWebSocket.disconnect();
-        terminalWebSocket = null;
-      }
-
-      terminalId = null;
-      return data.success;
-    }
-    return false;
-  } catch (error) {
-    console.error('Error closing terminal:', error);
-    return false;
-  }
 };

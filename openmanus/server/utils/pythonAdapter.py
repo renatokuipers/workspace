@@ -20,9 +20,7 @@ MESSAGE_TYPES = {
     "USER_INPUT": "user_input",
     "AGENT_OUTPUT": "agent_output",
     "STEP": "step",
-    "RESULT": "result",
-    "FLOW": "flow",
-    "EXECUTION": "execution"
+    "RESULT": "result"
 }
 
 # Global variables
@@ -234,29 +232,13 @@ def process_input():
 
 def read_process_output(pipe, level):
     """Read output from a subprocess pipe and send as log messages."""
-    try:
-        for line in iter(pipe.readline, b''):
-            try:
-                decoded_line = line.decode('utf-8').rstrip()
-                if decoded_line:
-                    # Check if this is likely a JSON message
-                    if decoded_line.startswith('{') and decoded_line.endswith('}'):
-                        try:
-                            parsed_json = json.loads(decoded_line)
-                            # If it has a type field, it's likely a protocol message
-                            if 'type' in parsed_json:
-                                print(decoded_line, flush=True)
-                                continue
-                        except json.JSONDecodeError:
-                            # Not valid JSON, treat as regular log
-                            pass
-                    
-                    # Regular log message
-                    send_log(level, decoded_line)
-            except Exception as e:
-                send_error(f"Error decoding process output: {str(e)}", traceback.format_exc())
-    except Exception as e:
-        send_error(f"Error reading process output: {str(e)}", traceback.format_exc())
+    for line in iter(pipe.readline, b''):
+        try:
+            decoded_line = line.decode('utf-8').rstrip()
+            if decoded_line:
+                send_log(level, decoded_line)
+        except Exception as e:
+            send_error(f"Error reading process output: {str(e)}", traceback.format_exc())
 
 if __name__ == "__main__":
     # Get target script path from command line arguments

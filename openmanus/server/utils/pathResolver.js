@@ -1,194 +1,77 @@
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
-const { promisify } = require('util');
-
-const execAsync = promisify(exec);
 
 /**
- * Resolve the path to the Python executable
- * @returns {Promise<string>} Path to the Python executable
+ * Resolves the path to the OpenManus run_flow.py script
+ * Tries multiple possible locations to find the script
  */
-async function resolvePythonPath() {
-  try {
-    // First, try to use PYTHON_PATH from environment
-    if (process.env.PYTHON_PATH) {
-      if (fs.existsSync(process.env.PYTHON_PATH)) {
-        return process.env.PYTHON_PATH;
-      }
-      console.warn(`PYTHON_PATH environment variable is set but file does not exist: ${process.env.PYTHON_PATH}`);
-    }
-
-    // Next, try to find Python in path using 'where' (Windows) or 'which' (UNIX)
-    try {
-      const command = process.platform === 'win32' ? 'where python' : 'which python3';
-      const { stdout } = await execAsync(command);
-      const pythonPath = stdout.trim().split('\n')[0]; // Take the first result
-
-      if (pythonPath && fs.existsSync(pythonPath)) {
-        return pythonPath;
-      }
-    } catch (error) {
-      console.warn(`Could not find Python in PATH: ${error.message}`);
-    }
-
-    // Default to standard paths based on OS
-    const defaultPaths = process.platform === 'win32'
-      ? [
-        'C:\\Python310\\python.exe',
-        'C:\\Python39\\python.exe',
-        'C:\\Python38\\python.exe',
-        'C:\\Python37\\python.exe',
-        'C:\\Python36\\python.exe',
-        process.env.LOCALAPPDATA + '\\Programs\\Python\\Python310\\python.exe',
-        process.env.LOCALAPPDATA + '\\Programs\\Python\\Python39\\python.exe',
-        process.env.LOCALAPPDATA + '\\Programs\\Python\\Python38\\python.exe'
-      ]
-      : [
-        '/usr/bin/python3',
-        '/usr/local/bin/python3',
-        '/opt/homebrew/bin/python3'
-      ];
-
-    for (const path of defaultPaths) {
-      if (fs.existsSync(path)) {
-        return path;
-      }
-    }
-
-    throw new Error('Python executable not found. Set PYTHON_PATH environment variable.');
-  } catch (error) {
-    console.error('Error resolving Python path:', error);
-    throw error;
+function resolveFlowScriptPath() {
+  // Use environment variable if specified and exists
+  const envPath = process.env.FLOW_SCRIPT_PATH;
+  if (envPath && fs.existsSync(envPath)) {
+    console.log(`Found flow script at environment path: ${envPath}`);
+    return envPath;
   }
+
+  // Try common relative paths from project root
+  const possiblePaths = [
+    // Direct relative paths from project root
+    path.join(__dirname, '../../openmanus/run_flow.py'),
+    path.join(__dirname, '../../../openmanus/run_flow.py'),
+    // Node modules path (if installed as package)
+    path.join(__dirname, '../../node_modules/openmanus/run_flow.py'),
+    // Current directory
+    path.join(process.cwd(), 'openmanus/run_flow.py'),
+    // Parent directory
+    path.join(process.cwd(), '../openmanus/run_flow.py'),
+  ];
+
+  for (const testPath of possiblePaths) {
+    if (fs.existsSync(testPath)) {
+      console.log(`Found flow script at: ${testPath}`);
+      return testPath;
+    }
+  }
+
+  // If we haven't found it yet, report all attempted paths
+  console.error('Could not find run_flow.py script at any of these locations:');
+  possiblePaths.forEach(p => console.error(`- ${p}`));
+
+  if (envPath) {
+    console.error(`- ${envPath} (from FLOW_SCRIPT_PATH environment variable)`);
+  }
+
+  // Fall back to the environment variable even if it doesn't exist
+  // This will likely fail but will produce a clearer error message
+  return envPath || path.join(__dirname, '../../openmanus/run_flow.py');
 }
 
 /**
- * Resolve the path to a Python script
- * @param {string} [scriptName] - Optional script name, defaults to run_flow.py
- * @returns {Promise<string>} Path to the script
+ * Resolves the path to the Python executable
+ * Handles both system Python and virtual environments
  */
-async function resolveScriptPath(scriptName = 'run_flow.py') {
-  try {
-    // First, try to use the environment variable
-    if (process.env.FLOW_SCRIPT_PATH) {
-      const envPath = process.env.FLOW_SCRIPT_PATH;
-      // Check if path is absolute
-      if (path.isAbsolute(envPath)) {
-        if (fs.existsSync(envPath)) {
-          return envPath;
-        }
-        console.warn(`FLOW_SCRIPT_PATH environment variable is set but file does not exist: ${envPath}`);
-      } else {
-        // Try different combinations with the relative path
-        const possiblePaths = [
-          path.join(process.cwd(), envPath),
-          path.join(process.cwd(), '..', envPath),
-          // Remove the ./ prefix if it exists
-          path.join(process.cwd(), envPath.replace(/^\.\//g, '')),
-          path.join(process.cwd(), '..', envPath.replace(/^\.\//g, ''))
-        ];
-        
-        for (const possiblePath of possiblePaths) {
-          if (fs.existsSync(possiblePath)) {
-            return possiblePath;
-          }
-        }
-        console.warn(`FLOW_SCRIPT_PATH environment variable is set but file does not exist at resolved paths`);
-      }
+function resolvePythonExecutable() {
+  const useVirtualEnv = process.env.USE_PYTHON_VENV === 'true';
+  const virtualEnvPath = process.env.PYTHON_VENV_PATH || path.join(__dirname, '../../../venv');
+
+  if (useVirtualEnv) {
+    // Determine platform-specific path to Python in virtual environment
+    const venvPythonPath = process.platform === 'win32'
+      ? path.join(virtualEnvPath, 'Scripts', 'python.exe')
+      : path.join(virtualEnvPath, 'bin', 'python');
+
+    if (fs.existsSync(venvPythonPath)) {
+      console.log(`Using Python from virtual environment: ${venvPythonPath}`);
+      return venvPythonPath;
     }
 
-    // Then try standard script locations
-    const potentialPaths = [
-      // Script is in current directory
-      path.join(process.cwd(), scriptName),
-      
-      // Script is in parent directory
-      path.join(process.cwd(), '..', scriptName),
-      
-      // Python directory
-      path.join(process.cwd(), 'python', scriptName),
-
-      // Server/python directory
-      path.join(process.cwd(), 'server', 'python', scriptName),
-
-      // Parent directory
-      path.join(process.cwd(), '..', scriptName),
-
-      // Parent's python directory
-      path.join(process.cwd(), '..', 'python', scriptName),
-
-      // Workspace directory
-      path.join(process.cwd(), 'workspace', scriptName),
-
-      // A more complicated relative path
-      path.join(process.cwd(), '..', 'pythagora-core', 'workspace', 'openmanus', scriptName),
-      
-      // Openmanus-specific paths
-      path.join(process.cwd(), 'openmanus', scriptName),
-      path.join(process.cwd(), '..', 'openmanus', scriptName),
-      path.resolve(process.cwd(), '..', 'openmanus', scriptName),
-      path.resolve(process.cwd(), 'openmanus', scriptName),
-    ];
-
-    for (const scriptPath of potentialPaths) {
-      if (fs.existsSync(scriptPath)) {
-        console.log(`Found flow script at path: ${scriptPath}`);
-        return scriptPath;
-      }
-    }
-
-    throw new Error(`Script "${scriptName}" not found. Set FLOW_SCRIPT_PATH environment variable.`);
-  } catch (error) {
-    console.error('Error resolving script path:', error);
-    throw error;
+    console.warn(`Virtual environment not found at ${virtualEnvPath}, falling back to system Python`);
   }
-}
 
-/**
- * Resolve the path to the workspace directory
- * @returns {Promise<string>} Path to the workspace directory
- */
-async function resolveWorkspacePath() {
-  try {
-    // First, try to use WORKSPACE_DIR from environment
-    if (process.env.WORKSPACE_DIR) {
-      if (fs.existsSync(process.env.WORKSPACE_DIR)) {
-        return process.env.WORKSPACE_DIR;
-      }
-      console.warn(`WORKSPACE_DIR environment variable is set but directory does not exist: ${process.env.WORKSPACE_DIR}`);
-    }
-
-    // Then try standard workspace locations
-    const potentialPaths = [
-      // Main workspace directory
-      path.join(process.cwd(), 'workspace'),
-
-      // Server workspace directory
-      path.join(process.cwd(), 'server', 'workspace'),
-
-      // Parent workspace directory
-      path.join(process.cwd(), '..', 'workspace'),
-    ];
-
-    for (const workspacePath of potentialPaths) {
-      if (fs.existsSync(workspacePath)) {
-        return workspacePath;
-      }
-    }
-
-    // Create a default workspace directory if none exists
-    const defaultWorkspace = path.join(process.cwd(), 'workspace');
-    fs.mkdirSync(defaultWorkspace, { recursive: true });
-    return defaultWorkspace;
-  } catch (error) {
-    console.error('Error resolving workspace path:', error);
-    throw error;
-  }
+  return process.env.PYTHON_PATH || 'python';
 }
 
 module.exports = {
-  resolvePythonPath,
-  resolveScriptPath,
-  resolveWorkspacePath
+  resolveFlowScriptPath,
+  resolvePythonExecutable
 };

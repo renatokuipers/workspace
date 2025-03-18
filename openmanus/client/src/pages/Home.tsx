@@ -13,7 +13,7 @@ import { Terminal } from '@/components/Tools/Terminal';
 import { Browser } from '@/components/Tools/Browser';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ChatMessage as IChatMessage } from '@/types';
-import { getChatHistory, sendMessage, editMessage, deleteMessage, getChatWebSocket, onChatMessage } from '@/api/chat';
+import { getChatHistory, sendMessage, editMessage, deleteMessage } from '@/api/chat';
 import { getProjectChat } from '@/api/projects';
 import { RootState } from '@/store';
 import {
@@ -49,56 +49,6 @@ export function Home() {
   useEffect(() => {
     loadProjectChat();
   }, [projectId]);
-
-  useEffect(() => {
-    // Ensure WebSocket is connected
-    const ws = getChatWebSocket();
-
-    // Register a listener for all incoming messages
-    const unsubscribe = onChatMessage((message) => {
-      if (message.type === 'agent' && message.role === 'assistant') {
-        // Add agent message to the chat
-        dispatch(addChatMessage({
-          id: message.id,
-          content: message.content,
-          role: 'assistant',
-          timestamp: message.timestamp
-        }));
-      } else if (message.type === 'tool') {
-        // Handle tool execution results
-        handleToolExecution(message);
-      } else if (message.type === 'error') {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: message.content
-        });
-      }
-    });
-
-    // Clean up on unmount
-    return () => {
-      unsubscribe();
-    };
-  }, [dispatch, toast]);
-
-  const handleToolExecution = (message: any) => {
-    switch (message.toolName) {
-      case 'code_editor':
-        dispatch(updateCodeEditor(message.output));
-        break;
-      case 'terminal':
-        // Terminal output is handled by Terminal.tsx
-        break;
-      case 'browser':
-        if (message.output?.url) {
-          dispatch(updateBrowserUrl(message.output.url));
-        }
-        break;
-      default:
-        console.log('Unknown tool:', message.toolName);
-    }
-  };
 
   const loadProjectChat = async () => {
     if (!projectId) return;

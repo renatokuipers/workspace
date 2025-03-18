@@ -1,1 +1,24 @@
-{"name": "openmanus", "version": "1.0.0", "description": "Local AI assistant platform combining Node.js backend with a React frontend", "main": "server/server.js", "scripts": {"client:start": "cd client && npm run dev", "server:start": "cd server && node server.js", "start": "concurrently -n \"client,server\" \"npm run client:start\" \"npm run server:start\"", "client:dev": "cd client && npm start", "server:dev": "cd server && node server.js", "dev": "npm run start", "client:build": "cd client && npm run build", "install:all": "npm install && cd server && npm install && cd ../client && npm install", "test": "echo \"No tests specified\" && exit 0", "debug": "concurrently -n \"client,server\" \"npm run client\" \"cross-env NODE_OPTIONS=--inspect-brk=9229 npm run server\""}, "keywords": ["ai", "assistant", "local", "node", "react", "python"], "author": "", "license": "MIT", "dependencies": {"concurrently": "^8.2.2"}, "devDependencies": {"cross-env": "^7.0.3"}}
+{
+  "name": "OpenManus",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "postinstall": "concurrently -n \"client,server\" \"npm run client-install\" \"npm run server-install\"",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "client": "cd client && npm run dev",
+    "client-install": "cd client && npm install",
+    "server": "cd server && npm run dev",
+    "server-install": "cd server && npm install",
+    "start": "concurrently -n \"client,server\" \"npm run client\" \"npm run server\"",
+    "debug": "concurrently -n \"client,server\" \"npm run client\" \"cross-env NODE_OPTIONS=--inspect-brk=9229 npm run server\""
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}
